@@ -1,5 +1,5 @@
 local flash = require("flash")
-local flypy = require("flash-zh.flypy")
+local rime = require("flash-zh.rime")
 
 local M = {}
 
@@ -39,46 +39,116 @@ function M.remote(opts)
 	flash.remote(opts)
 end
 
-function M.mix_mode(str)
-	local all_possible_splits = M.parser(str)
-	local regexs = { [[\(]] }
-	for _, v in ipairs(all_possible_splits) do
-		regexs[#regexs + 1] = M.regex(v)
-		regexs[#regexs + 1] = [[\|]]
+-- ===========================================================================
+-- code trie parser
+-- ===========================================================================
+
+local to_escape = "\\^$*+?.%|[]()"
+
+-- Enumerate the possible segmentations of `str` against the code trie.
+-- Each split is a list of nodes consumed by `M.regex`.
+local function trie_parse(str, literal)
+	local source = rime.source()
+	if not source then
+		return {}
 	end
-	regexs[#regexs] = [[\)]]
-	local ret = table.concat(regexs)
-	return ret, ret
+	local root = source.trie
+	local splits = {}
+
+	local function emit(acc)
+		local copy = {}
+		for i = 1, #acc do
+			copy[i] = acc[i]
+		end
+		splits[#splits + 1] = copy
+	end
+
+	local function rec(pos, acc)
+		if pos > #str then
+			emit(acc)
+			return
+		end
+		local ch = str:sub(pos, pos)
+		if ch:match("%l") then
+			-- literal: keep lowercase letters as a plain English match
+			if literal then
+				acc[#acc + 1] = { type = "alpha", str = ch }
+				rec(pos + 1, acc)
+				acc[#acc] = nil
+			end
+			-- walk the trie from the root, collecting every complete code
+			local node = root
+			local i = pos
+			local terminals
+			while i <= #str do
+				local c = str:sub(i, i)
+				if not c:match("%l") then
+					break
+				end
+				local nxt = node.children[c]
+				if not nxt then
+					break
+				end
+				node = nxt
+				if node.exact_raw then
+					terminals = terminals or {}
+					terminals[#terminals + 1] = node
+				end
+				i = i + 1
+			end
+			if terminals then
+				for _, term in ipairs(terminals) do
+					acc[#acc + 1] = { type = "raw", str = rime.exact_class(term) }
+					rec(pos + term.depth, acc)
+					acc[#acc] = nil
+				end
+			end
+			-- Remaining input is a prefix of some code: match every character
+			-- whose code starts with it. Skip when it is a leaf, since the
+			-- exact branch above already covers that identical character set.
+			if i > #str and node ~= root and not (node.exact_raw and next(node.children) == nil) then
+				acc[#acc + 1] = { type = "raw", str = rime.prefix_class(node) }
+				emit(acc)
+				acc[#acc] = nil
+			end
+		else
+			-- any other character is matched literally
+			acc[#acc + 1] = { type = "other", str = ch }
+			rec(pos + 1, acc)
+			acc[#acc] = nil
+		end
+	end
+
+	rec(1, {})
+	return splits
 end
 
-function M.zh_mode(str)
-	local regexs = {}
-	while string.len(str) > 1 do
-		regexs[#regexs + 1] = flypy.char2patterns[string.sub(str, 1, 2)]
-		str = string.sub(str, 3)
+local function build_trie_regex(str, literal)
+	local splits = trie_parse(str, literal)
+	if #splits == 0 then
+		return [[\%^\%$]]
+	elseif #splits == 1 then
+		return M.regex(splits[1])
 	end
-	if string.len(str) == 1 then
-		regexs[#regexs + 1] = flypy.char1patterns[str]
+	local regexs = { [[\(]] }
+	for i, split in ipairs(splits) do
+		regexs[#regexs + 1] = M.regex(split)
+		if i < #splits then
+			regexs[#regexs + 1] = [[\|]]
+		end
 	end
-	local ret = table.concat(regexs)
-	return ret, ret
+	regexs[#regexs + 1] = [[\)]]
+	return table.concat(regexs)
 end
 
 local nodes = {
 	alpha = function(str)
 		return "[" .. str .. string.upper(str) .. "]"
 	end,
-	pinyin = function(str)
-		return flypy.char2patterns[str]
-	end,
-	comma = function(str)
-		return flypy.comma[str]
-	end,
-	singlepin = function(str)
-		return flypy.char1patterns[str]
-	end,
 	other = function(str)
-		str = flypy.escape[str] or str
+		return vim.fn.escape(str, to_escape)
+	end,
+	raw = function(str)
 		return str
 	end,
 }
@@ -91,126 +161,40 @@ function M.regex(parser)
 	return table.concat(regexs)
 end
 
-function M.parser(str, prefix)
-	prefix = prefix or {}
-	local firstchar = string.sub(str, 1, 1)
-	local chars = {}
-	for k, _ in pairs(flypy.comma) do
-		table.insert(chars, k)
-	end
-	if firstchar == "" then
-		return { prefix }
-	elseif string.match(firstchar, "%l") then
-		local secondchar = string.sub(str, 2, 2)
-		if secondchar == "" then
-			local prefix2 = M.copy(prefix)
-			prefix[#prefix + 1] = { str = firstchar, type = "alpha" }
-			prefix2[#prefix2 + 1] = { str = firstchar, type = "singlepin" }
-			return { prefix, prefix2 }
-		elseif string.match(secondchar, "%a") then
-			if flypy.char2patterns[firstchar .. secondchar] then
-				local prefix2 = M.copy(prefix)
-				prefix2[#prefix2 + 1] = { str = firstchar, type = "alpha" }
-				prefix[#prefix + 1] = { str = firstchar .. secondchar, type = "pinyin" }
-				local str2 = string.sub(str, 2, -1)
-				str = string.sub(str, 3, -1)
-				return M.merge_table(M.parser(str, prefix), M.parser(str2, prefix2))
-			else
-				prefix[#prefix + 1] = { str = firstchar, type = "alpha" }
-				str = string.sub(str, 2, -1)
-				return (M.parser(str, prefix))
-			end
-		elseif vim.list_contains(chars, secondchar) then
-			prefix[#prefix + 1] = { str = firstchar, type = "alpha" }
-			prefix[#prefix + 1] = { str = secondchar, type = "comma" }
-			str = string.sub(str, 3, -1)
-			return M.parser(str, prefix)
-		else
-			prefix[#prefix + 1] = { str = firstchar, type = "alpha" }
-			prefix[#prefix + 1] = { str = secondchar, type = "other" }
-			str = string.sub(str, 3, -1)
-			return M.parser(str, prefix)
+local no_match = [[\%^\%$]]
+local configured = false
+local warned = false
+
+local function resolve(str, literal)
+	local source = rime.source()
+	if not source then
+		if not configured and not warned then
+			warned = true
+			vim.notify("flash-zh: no dict configured, Chinese matching disabled", vim.log.levels.WARN)
 		end
-	elseif vim.list_contains(chars, firstchar) then
-		prefix[#prefix + 1] = { str = firstchar, type = "comma" }
-		str = string.sub(str, 2, -1)
-		return M.parser(str, prefix)
-	else
-		prefix[#prefix + 1] = { str = firstchar, type = "other" }
-		str = string.sub(str, 2, -1)
-		return M.parser(str, prefix)
+		return no_match, no_match
 	end
+	local ret = build_trie_regex(str, literal)
+	return ret, ret
 end
 
-function M.merge_table(tab1, tab2)
-	for i = 1, #tab2 do
-		table.insert(tab1, tab2[i])
-	end
-	return tab1
+function M.mix_mode(str)
+	return resolve(str, true)
 end
 
-function M.copy(table)
-	local copy = {}
-	for k, v in pairs(table) do
-		copy[k] = v
-	end
-	return copy
+function M.zh_mode(str)
+	return resolve(str, false)
 end
 
 -- @param opts table
--- @field opts.char_map table Char map for flypy.
--- @field[opt] opts.char_map.comma table Override the default comma map.
--- @field[opt] opts.char_map.append_comma table Append to the default comma map.
--- @field[opt] opts.char_map.append_char1 table Append to the default char1patterns map.
--- @field[opt] opts.char_map.append_char2 table Append to the default char2patterns map.
+-- @field opts.dict string|table Rime dict.yaml path(s). A string, a list of
+--             paths, or `{ paths = {...}, charsets = "...", charset_sets = {...} }`.
 function M.setup(opts)
 	opts = opts or {}
-	if not opts.char_map then
-		return
-	end
-	local to_escape = "\\^$*+?.%|[]()"
-	if opts.char_map.comma then
-		for k, v in pairs(opts.char_map.comma) do
-			if #k ~= 1 then
-				error("comma key must be a single character")
-			else
-				v = vim.fn.escape(v, to_escape)
-				flypy.comma[k] = "[" .. v .. "]"
-			end
-		end
-	end
-	if opts.char_map.append_comma then
-		for k, v in pairs(opts.char_map.append_comma) do
-			if #k ~= 1 then
-				error("append_comma key must be a single character")
-			else
-				local chars = flypy.comma[k] or ""
-				chars = string.sub(chars, 2, -2) .. vim.fn.escape(v, to_escape)
-				flypy.comma[k] = "[" .. chars .. "]"
-			end
-		end
-	end
-	if opts.char_map.append_char1 then
-		for k, v in pairs(opts.char_map.append_char1) do
-			if #k ~= 1 then
-				error("append_char1 key must be a single character")
-			else
-				local chars = flypy.char1patterns[k] or ""
-				chars = string.sub(chars, 2, -2) .. vim.fn.escape(v, to_escape)
-				flypy.char1patterns[k] = "[" .. chars .. "]"
-			end
-		end
-	end
-	if opts.char_map.append_char2 then
-		for k, v in pairs(opts.char_map.append_char2) do
-			if #k ~= 2 then
-				error("append_char2 key must be two characters")
-			else
-				local chars = flypy.char2patterns[k] or ""
-				chars = string.sub(chars, 2, -2) .. vim.fn.escape(v, to_escape)
-				flypy.char2patterns[k] = "[" .. chars .. "]"
-			end
-		end
+	if opts.dict then
+		rime.configure(opts.dict)
+		configured = true
+		warned = false
 	end
 end
 

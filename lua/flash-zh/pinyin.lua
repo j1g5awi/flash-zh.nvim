@@ -1,20 +1,16 @@
-local flypy = require("flash-zh.flypy")
+local rime = require("flash-zh.rime")
 
 local M = {}
 
 local py_table = {}
-local mt = {}
-setmetatable(py_table, { __index = mt })
 
-function py_table:insert(char, pinyin)
-	if not self[char] then
-		self[char] = {}
+local function py_insert(char, code)
+	local list = py_table[char]
+	if not list then
+		list = {}
+		py_table[char] = list
 	end
-	table.insert(self[char], pinyin)
-end
-
-function py_table:find(char)
-	return self[char]
+	table.insert(list, code)
 end
 
 local function get_char_size(char) --获取单个字符长度
@@ -61,23 +57,36 @@ local function utf8_sub(str, startChar, numChars) --截取中文字符串
 	return string.sub(str, startIndex, currentIndex - 1)
 end
 
-local function init_py_table()
-	for k, v in pairs(flypy.char2patterns) do
-		local start_char, end_char = v:find("%[(.-)%]")
-		v = v:sub(start_char + 1, end_char - 1)
-		for i = 1, utf8_len(v) do
-			local char = utf8_sub(v, i, 1)
-			py_table:insert(char, k)
+local function build_from_dict(codes_by_char)
+	for char, codes in pairs(codes_by_char) do
+		if utf8_len(char) == 1 then
+			for _, code in ipairs(codes) do
+				py_insert(char, code)
+			end
 		end
 	end
-	for k, v in pairs(flypy.comma) do
-		local start_char, end_char = v:find("%[(.-)%]")
-		v = v:sub(start_char + 1, end_char - 1)
-		for i = 1, utf8_len(v) do
-			local char = utf8_sub(v, i, 1)
-			py_table:insert(char, k)
+end
+
+local built = false
+local built_dict = nil
+
+local function ensure()
+	local dict = nil
+	if rime.is_active() then
+		local source = rime.source()
+		if source then
+			dict = source.codes_by_char
 		end
 	end
+	if built and built_dict == dict then
+		return
+	end
+	py_table = {}
+	if dict then
+		build_from_dict(dict)
+	end
+	built = true
+	built_dict = dict
 end
 
 local function append_to_pinyins(pinyins, suffixes)
@@ -93,15 +102,17 @@ local function append_to_pinyins(pinyins, suffixes)
 	return result
 end
 
+-- Returns the list of code combinations for `chars`, used by the labeler to
+-- avoid conflicting labels. Characters without a code fall back to themselves.
 function M.pinyin(chars)
+	ensure()
 	local pinyins = {}
 	for i = 1, utf8_len(chars) do
 		local char = utf8_sub(chars, i, 1)
-		--要寻找的字符串
 		if string.len(char) == 1 then
 			pinyins = append_to_pinyins(pinyins, { char })
 		else
-			local char_pinyins = py_table:find(char)
+			local char_pinyins = py_table[char]
 			if not char_pinyins then
 				pinyins = append_to_pinyins(pinyins, { char })
 			else
@@ -116,5 +127,4 @@ function M.pinyin(chars)
 	return result
 end
 
-init_py_table()
 return M
