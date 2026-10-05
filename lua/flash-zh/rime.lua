@@ -4,6 +4,7 @@
 local M = {}
 
 local BUILTIN_CHARSET_VERSION = 1
+local PREFIX_FILTER_VERSION = 1
 
 local function set_to_string(set)
 	local buf, n = {}, 0
@@ -210,6 +211,7 @@ local function stat_key(cfg)
 	else
 		parts[#parts + 1] = "no-charset-filter"
 	end
+	parts[#parts + 1] = "prefix-filter:" .. tostring(PREFIX_FILTER_VERSION)
 	return table.concat(parts, "|")
 end
 
@@ -226,48 +228,93 @@ local function cache_file(cfg)
 	return string.format("%s/dict-%x.tsv", dir, h)
 end
 
-local function load_rows_from_cache(cpath, root, codes_by_char, seen_char, seen_code)
+-- Read the cached filtered rows (flat array: text, code, text, code, ...).
+local function rows_from_cache(cpath)
 	local f = io.open(cpath, "rb")
 	if not f then
-		return false
+		return nil
 	end
 	local data = f:read("*a")
 	f:close()
+	local rows = {}
 	for line in data:gmatch("[^\r\n]+") do
 		local c1 = line:find("\t", 1, true)
 		if c1 then
-			insert_row(root, codes_by_char, seen_char, seen_code, line:sub(1, c1 - 1), line:sub(c1 + 1))
+			rows[#rows + 1] = line:sub(1, c1 - 1)
+			rows[#rows + 1] = line:sub(c1 + 1)
 		end
 	end
-	return true
+	return rows
+end
+
+-- Drop any code that is a proper prefix of another code, so the remaining set
+-- is a prefix code (avoids ambiguous segmentations from merged tables).
+local function remove_prefix_codes(rows)
+	local seen, codes = {}, {}
+	for i = 2, #rows, 2 do
+		local code = rows[i]
+		if not seen[code] then
+			seen[code] = true
+			codes[#codes + 1] = code
+		end
+	end
+	table.sort(codes)
+	local prefix = {}
+	for i = 1, #codes - 1 do
+		local a, b = codes[i], codes[i + 1]
+		if #a < #b and b:sub(1, #a) == a then
+			prefix[a] = true
+		end
+	end
+	local out = {}
+	for i = 1, #rows, 2 do
+		if not prefix[rows[i + 1]] then
+			out[#out + 1] = rows[i]
+			out[#out + 1] = rows[i + 1]
+		end
+	end
+	return out
+end
+
+local function write_cache(cpath, rows)
+	local tmp = cpath .. ".tmp"
+	local wf = io.open(tmp, "wb")
+	if not wf then
+		return
+	end
+	for i = 1, #rows, 2 do
+		wf:write(rows[i], "\t", rows[i + 1], "\n")
+	end
+	wf:close()
+	os.remove(cpath)
+	if not os.rename(tmp, cpath) then
+		os.remove(tmp)
+	end
 end
 
 local function load(cfg)
+	local cpath = cache_file(cfg)
+	local rows = rows_from_cache(cpath)
+	if rows then
+		rows = remove_prefix_codes(rows)
+	else
+		local charset_set = resolve_charset_set(cfg)
+		rows = {}
+		for _, path in ipairs(cfg.paths) do
+			local parsed = parse_dict(path, charset_set)
+			for i = 1, #parsed do
+				rows[#rows + 1] = parsed[i]
+			end
+		end
+		rows = remove_prefix_codes(rows)
+		write_cache(cpath, rows)
+	end
+
 	local root = { children = {} }
 	local codes_by_char = {}
 	local seen_char, seen_code = {}, {}
-
-	local cpath = cache_file(cfg)
-	if not load_rows_from_cache(cpath, root, codes_by_char, seen_char, seen_code) then
-		local charset_set = resolve_charset_set(cfg)
-		local tmp = cpath .. ".tmp"
-		local wf = io.open(tmp, "wb")
-		for _, path in ipairs(cfg.paths) do
-			local rows = parse_dict(path, charset_set)
-			for i = 1, #rows, 2 do
-				insert_row(root, codes_by_char, seen_char, seen_code, rows[i], rows[i + 1])
-				if wf then
-					wf:write(rows[i], "\t", rows[i + 1], "\n")
-				end
-			end
-		end
-		if wf then
-			wf:close()
-			os.remove(cpath)
-			if not os.rename(tmp, cpath) then
-				os.remove(tmp)
-			end
-		end
+	for i = 1, #rows, 2 do
+		insert_row(root, codes_by_char, seen_char, seen_code, rows[i], rows[i + 1])
 	end
 
 	finalize(root)
