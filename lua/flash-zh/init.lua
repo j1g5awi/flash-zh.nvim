@@ -188,7 +188,9 @@ end
 
 -- @param opts table
 -- @field opts.dict string|table Rime dict.yaml path(s). A string, a list of
---             paths, or `{ paths = {...}, charsets = "...", charset_sets = {...} }`.
+--             paths, or `{ paths = {...}, filter_charset = true|false }`.
+--             `filter_charset` (default true) restricts entries to the built-in
+--             common character set; set false to keep every character.
 function M.setup(opts)
 	opts = opts or {}
 	if opts.dict then

@@ -1,10 +1,9 @@
 --- Rime dict.yaml data source for flash-zh.
---- Parses one or more `*.dict.yaml` tables, optionally filters entries to a
---- character set loaded from a Rime `lua` module (e.g. `yuhao_charsets.lua`),
---- and builds a code trie for the parser.
+--- Parses one or more `*.dict.yaml` tables, optionally filters entries to the
+--- built-in common character set, and builds a code trie for the parser.
 local M = {}
 
-local DEFAULT_SETS = { "ubiquitous", "common", "tonggui", "harmonic" }
+local BUILTIN_CHARSET_VERSION = 1
 
 local function set_to_string(set)
 	local buf, n = {}, 0
@@ -61,32 +60,28 @@ function M.prefix_class(node)
 	return node._pc
 end
 
-local function load_charsets(path, sets)
-	local chunk = loadfile(path)
-	if not chunk then
-		return nil
-	end
-	local ok, module = pcall(chunk)
-	if not ok or type(module) ~= "table" then
-		return nil
-	end
-	local names = sets or DEFAULT_SETS
-	if type(names) == "string" then
-		names = { names }
-	end
-	local set = {}
-	for _, name in ipairs(names) do
-		local body = module[name]
-		if type(body) == "string" then
-			for line in body:gmatch("[^\r\n]+") do
-				line = line:gsub("^%s+", ""):gsub("%s+$", "")
-				if line ~= "" then
-					set[line] = true
-				end
-			end
+-- Append every UTF-8 character in `body` to `set`, ignoring whitespace.
+local function add_chars(set, body)
+	for ch in body:gmatch(".[\128-\191]*") do
+		if ch ~= "\r" and ch ~= "\n" and ch ~= " " and ch ~= "\t" then
+			set[ch] = true
 		end
 	end
-	return set
+end
+
+-- Build the character filter from the built-in common union set. Returns nil
+-- (no filtering) when `filter_charset` is disabled.
+local function resolve_charset_set(cfg)
+	if not cfg.filter_charset then
+		return nil
+	end
+	local builtin = require("flash-zh.charsets")
+	if type(builtin) == "string" then
+		local set = {}
+		add_chars(set, builtin)
+		return set
+	end
+	return nil
 end
 
 local function parse_header_column(line, state)
@@ -210,10 +205,11 @@ local function stat_key(cfg)
 	for _, p in ipairs(cfg.paths) do
 		parts[#parts + 1] = p .. ":" .. tostring(vim.fn.getftime(p))
 	end
-	if cfg.charsets then
-		parts[#parts + 1] = cfg.charsets .. ":" .. tostring(vim.fn.getftime(cfg.charsets))
+	if cfg.filter_charset then
+		parts[#parts + 1] = "builtin-charset:" .. tostring(BUILTIN_CHARSET_VERSION)
+	else
+		parts[#parts + 1] = "no-charset-filter"
 	end
-	parts[#parts + 1] = table.concat(cfg.sets or {}, ",")
 	return table.concat(parts, "|")
 end
 
@@ -253,10 +249,7 @@ local function load(cfg)
 
 	local cpath = cache_file(cfg)
 	if not load_rows_from_cache(cpath, root, codes_by_char, seen_char, seen_code) then
-		local charset_set = nil
-		if cfg.charsets then
-			charset_set = load_charsets(cfg.charsets, cfg.sets)
-		end
+		local charset_set = resolve_charset_set(cfg)
 		local tmp = cpath .. ".tmp"
 		local wf = io.open(tmp, "wb")
 		for _, path in ipairs(cfg.paths) do
@@ -298,16 +291,15 @@ M._source = nil
 M._failed = false
 M._cache = {}
 
----@param dict string|table a path, a list of paths, or { paths = {...}, charsets = "...", charset_sets = {...} }
+---@param dict string|table a path, a list of paths, or { paths = {...}, filter_charset = true }
 function M.configure(dict)
-	local paths, charsets, sets
+	local paths, filter_charset
 	if type(dict) == "string" then
 		paths = { dict }
 	elseif type(dict) == "table" then
 		if dict.paths then
 			paths = dict.paths
-			charsets = dict.charsets
-			sets = dict.charset_sets
+			filter_charset = dict.filter_charset
 		else
 			paths = dict
 		end
@@ -315,7 +307,10 @@ function M.configure(dict)
 	if type(paths) == "string" then
 		paths = { paths }
 	end
-	M._cfg = { paths = paths or {}, charsets = charsets, sets = sets }
+	if filter_charset == nil then
+		filter_charset = true
+	end
+	M._cfg = { paths = paths or {}, filter_charset = filter_charset }
 	M._source = nil
 	M._failed = false
 end

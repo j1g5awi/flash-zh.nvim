@@ -11,6 +11,17 @@
 
 ```lua
 return {{
+    -- 先配置 flash.nvim 本身；注意不要在这里绑定 s / S，
+    -- 否则会和 flash-zh 的映射冲突，按 s 会走 flash 原生。
+    "folke/flash.nvim",
+    event = "VeryLazy",
+    opts = {
+        highlight = {
+            backdrop = false,
+            matches = false
+        }
+    }
+}, {
     "rainzm/flash-zh.nvim",
     event = "VeryLazy",
     dependencies = "folke/flash.nvim",
@@ -21,32 +32,18 @@ return {{
                 paths = {
                     vim.fn.expand("~/AppData/Roaming/Rime/yuhao/yuming.full.dict.yaml"),
                 },
-                -- 可选：只保留该 Lua 模块中出现的字符（即 Rime 的 yuhao_charsets.lua）
-                charsets = vim.fn.expand("~/AppData/Roaming/Rime/lua/yuhao/yuhao_charsets.lua"),
-                -- 可选：指定字符集子集；默认取四集（ubiquitous/common/tonggui/harmonic）并集
-                -- charset_sets = { "common" },
+                -- filter_charset 可选，默认 true：只保留内置常用字并集（11,177 字）
+                -- filter_charset = false,
             },
         })
+        -- 在 config 里绑定，晚于 flash.nvim 的映射，确保覆盖生效
+        vim.keymap.set({ "n", "x", "o" }, "s", function()
+            require("flash-zh").jump({ chinese_only = false })
+        end, { desc = "Flash between Chinese" })
+        vim.keymap.set({ "n", "x", "o" }, "S", function()
+            require("flash-zh").jump({ chinese_only = true })
+        end, { desc = "Flash between Chinese (chinese only)" })
     end,
-    keys = {{
-        "s",
-        mode = { "n", "x", "o" },
-        function()
-            require("flash-zh").jump({
-                chinese_only = false
-            })
-        end,
-        desc = "Flash between Chinese"
-    }},
-}, {
-    "folke/flash.nvim",
-    event = "VeryLazy",
-    opts = {
-        highlight = {
-            backdrop = false,
-            matches = false
-        }
-    }
 }}
 ```
 
@@ -64,10 +61,9 @@ return {{
 
 - `dict = "路径"`：单个码表。
 - `dict = { "路径1", "路径2" }`：多个码表合并。
-- `dict = { paths = { ... }, charsets = "...", charset_sets = { ... } }`：
+- `dict = { paths = { ... }, filter_charset = true }`：
   - `paths`：码表路径列表；
-  - `charsets`：可选，指向 Rime 的 `yuhao_charsets.lua`，只保留其中出现的字符；
-  - `charset_sets`：可选，指定字符集子集，默认取四集并集。
+  - `filter_charset`：可选，默认 `true`，只保留内置的常用字并集（11,177 字）；设为 `false` 则保留码表中所有单字。
 
 只保留单字条目（`text` 为单字符且编码为 `[a-z]+`）。首次加载会解析码表并把过滤结果按 mtime 缓存到
 `stdpath("cache")/flash-zh`，之后启动很快。未配置 `dict` 时不会匹配中文。
