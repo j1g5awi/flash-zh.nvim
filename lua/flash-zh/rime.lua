@@ -4,7 +4,7 @@
 local M = {}
 
 local BUILTIN_CHARSET_VERSION = 1
-local PREFIX_FILTER_VERSION = 1
+local PREFIX_FILTER_VERSION = 2
 
 local function set_to_string(set)
 	local buf, n = {}, 0
@@ -247,28 +247,44 @@ local function rows_from_cache(cpath)
 	return rows
 end
 
--- Drop any code that is a proper prefix of another code, so the remaining set
--- is a prefix code (avoids ambiguous segmentations from merged tables).
+-- Drop a character's code when that code is a proper prefix of one of the
+-- same character's other codes: the longer code already matches the
+-- character when only the short one has been typed, so the short one is
+-- redundant. Codes shared with other characters are never touched, so a
+-- character can not lose its only code this way.
 local function remove_prefix_codes(rows)
-	local seen, codes = {}, {}
-	for i = 2, #rows, 2 do
-		local code = rows[i]
-		if not seen[code] then
-			seen[code] = true
-			codes[#codes + 1] = code
+	local by_char = {}
+	for i = 1, #rows, 2 do
+		local text, code = rows[i], rows[i + 1]
+		local list = by_char[text]
+		if not list then
+			list = {}
+			by_char[text] = list
+		end
+		list[#list + 1] = code
+	end
+	local drop = {}
+	for text, list in pairs(by_char) do
+		if #list > 1 then
+			table.sort(list)
+			for i = 1, #list - 1 do
+				local a = list[i]
+				for j = i + 1, #list do
+					local b = list[j]
+					if #b > #a and b:sub(1, #a) == a then
+						drop[text .. "\0" .. a] = true
+						break
+					end
+				end
+			end
 		end
 	end
-	table.sort(codes)
-	local prefix = {}
-	for i = 1, #codes - 1 do
-		local a, b = codes[i], codes[i + 1]
-		if #a < #b and b:sub(1, #a) == a then
-			prefix[a] = true
-		end
+	if next(drop) == nil then
+		return rows
 	end
 	local out = {}
 	for i = 1, #rows, 2 do
-		if not prefix[rows[i + 1]] then
+		if not drop[rows[i] .. "\0" .. rows[i + 1]] then
 			out[#out + 1] = rows[i]
 			out[#out + 1] = rows[i + 1]
 		end
@@ -294,10 +310,9 @@ end
 
 local function load(cfg)
 	local cpath = cache_file(cfg)
+	-- the cache holds rows after prefix filtering
 	local rows = rows_from_cache(cpath)
-	if rows then
-		rows = remove_prefix_codes(rows)
-	else
+	if not rows then
 		local charset_set = resolve_charset_set(cfg)
 		rows = {}
 		for _, path in ipairs(cfg.paths) do
@@ -338,7 +353,8 @@ M._source = nil
 M._failed = false
 M._cache = {}
 
----@param dict string|table a path, a list of paths, or { paths = {...}, filter_charset = true }
+---@param dict string|table a path, a list of paths, or
+---  { paths = {...}, filter_charset = true }
 function M.configure(dict)
 	local paths, filter_charset
 	if type(dict) == "string" then
