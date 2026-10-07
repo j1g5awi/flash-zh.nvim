@@ -38,11 +38,8 @@ return {{
         })
         -- 在 config 里绑定，晚于 flash.nvim 的映射，确保覆盖生效
         vim.keymap.set({ "n", "x", "o" }, "s", function()
-            require("flash-zh").jump({ chinese_only = false })
+            require("flash-zh").jump()
         end, { desc = "Flash between Chinese" })
-        vim.keymap.set({ "n", "x", "o" }, "S", function()
-            require("flash-zh").jump({ chinese_only = true })
-        end, { desc = "Flash between Chinese (chinese only)" })
     end,
 }}
 ```
@@ -50,7 +47,7 @@ return {{
 ## 使用
 
 1. 输入码表的**原生编码**：完整编码跳到该字（例如日月码 `kbhnd` → `的`），只输前缀则匹配所有以该前缀开头的字。
-2. 默认工作在中英混杂模式下：小写字母同时按英文匹配；增加选项 `chinese_only` 使其工作在仅中文模式下。
+2. 中英混杂：小写字母同时按英文匹配（小写字母也匹配其大写形式）。
 3. `jump` 的参数会传递给 `flash.nvim`，查看 [issue 2](https://github.com/rainzm/flash-zh.nvim/issues/2) 。
 
 **如果想要跳转的地方没有 label 出现，接着输入即可，和查找一样。**
