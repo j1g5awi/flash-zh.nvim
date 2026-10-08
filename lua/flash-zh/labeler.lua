@@ -54,7 +54,13 @@ function M:skip(win, labels)
 			local prefix_len = string.len(prefix)
 			local filter_chars = {}
 			for i = 1, #pys do
-				filter_chars[i] = string.sub(pys[i], prefix_len + 1, prefix_len + 1)
+				local combo = pys[i]
+				if combo:sub(1, prefix_len) == prefix then
+					local c = combo:sub(prefix_len + 1, prefix_len + 1)
+					if c ~= "" and c:byte() < 128 then
+						filter_chars[#filter_chars + 1] = c
+					end
+				end
 			end
 
 			labels = vim.tbl_filter(function(c)
