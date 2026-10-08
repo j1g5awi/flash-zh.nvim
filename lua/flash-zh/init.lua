@@ -3,6 +3,20 @@ local rime = require("flash-zh.rime")
 
 local M = {}
 
+local function with_fast_engine(fn, opts)
+	local prev = vim.o.regexpengine
+	if prev == 1 then
+		return fn(opts)
+	end
+	vim.o.regexpengine = 1
+	local ok, res = xpcall(fn, debug.traceback, opts)
+	vim.o.regexpengine = prev
+	if not ok then
+		error(res, 0)
+	end
+	return res
+end
+
 function M.jump(opts)
 	opts = opts or {}
 	opts = vim.tbl_deep_extend("force", {
@@ -14,7 +28,7 @@ function M.jump(opts)
 			require("flash-zh.labeler").new(state):update()
 		end,
 	}, opts)
-	flash.jump(opts)
+	with_fast_engine(flash.jump, opts)
 end
 
 function M.remote(opts)
@@ -28,7 +42,7 @@ function M.remote(opts)
 			require("flash-zh.labeler").new(state):update()
 		end,
 	}, opts)
-	flash.remote(opts)
+	with_fast_engine(flash.remote, opts)
 end
 
 -- ===========================================================================
